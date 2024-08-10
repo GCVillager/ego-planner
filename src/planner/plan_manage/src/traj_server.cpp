@@ -4,11 +4,15 @@
 #include "quadrotor_msgs/PositionCommand.h"
 #include "std_msgs/Empty.h"
 #include "visualization_msgs/Marker.h"
-#include <ros/ros.h>
+#include "geometry_msgs/Twist.h" //包含 geometry_msgs/Twist 头文件
+#include "ros/ros.h"
 
 ros::Publisher pos_cmd_pub;
+ros::Publisher prometheus_cmd_pub; // 修改发布者名称
 
 quadrotor_msgs::PositionCommand cmd;
+geometry_msgs::Twist cmd2; // 使用 geometry_msgs::Twist 替换 airsim_ros_pkgs::VelCmd
+
 double pos_gain[3] = {0, 0, 0};
 double vel_gain[3] = {0, 0, 0};
 
@@ -24,10 +28,9 @@ int traj_id_;
 double last_yaw_, last_yaw_dot_;
 double time_forward_;
 
-void bsplineCallback(ego_planner::BsplineConstPtr msg)
+void bsplineCallback(const ego_planner::Bspline::ConstPtr& msg) //修正回调函数的参数类型
 {
-  // parse pos traj
-
+  // 解析位置轨迹
   Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
 
   Eigen::VectorXd knots(msg->knots.size());
@@ -46,15 +49,6 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
   UniformBspline pos_traj(pos_pts, msg->order, 0.1);
   pos_traj.setKnot(knots);
 
-  // parse yaw traj
-
-  // Eigen::MatrixXd yaw_pts(msg->yaw_pts.size(), 1);
-  // for (int i = 0; i < msg->yaw_pts.size(); ++i) {
-  //   yaw_pts(i, 0) = msg->yaw_pts[i];
-  // }
-
-  //UniformBspline yaw_traj(yaw_pts, msg->order, msg->yaw_dt);
-
   start_time_ = msg->start_time;
   traj_id_ = msg->traj_id;
 
@@ -72,7 +66,6 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
 {
   constexpr double PI = 3.1415926;
   constexpr double YAW_DOT_MAX_PER_SEC = PI;
-  // constexpr double YAW_DOT_DOT_MAX_PER_SEC = PI;
   std::pair<double, double> yaw_yawdot(0, 0);
   double yaw = 0;
   double yawdot = 0;
@@ -149,7 +142,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
   }
 
   if (fabs(yaw - last_yaw_) <= max_yaw_change)
-    yaw = 0.5 * last_yaw_ + 0.5 * yaw; // nieve LPF
+    yaw = 0.5 * last_yaw_ + 0.5 * yaw; // naive LPF
   yawdot = 0.5 * last_yaw_dot_ + 0.5 * yawdot;
   last_yaw_ = yaw;
   last_yaw_dot_ = yawdot;
@@ -162,14 +155,14 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
 
 void cmdCallback(const ros::TimerEvent &e)
 {
-  /* no publishing before receive traj_ */
+  /* 在接收到轨迹之前不发布任何消息 */
   if (!receive_traj_)
     return;
 
   ros::Time time_now = ros::Time::now();
   double t_cur = (time_now - start_time_).toSec();
 
-  Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero()), pos_f;
+  Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero());
   std::pair<double, double> yaw_yawdot(0, 0);
 
   static ros::Time time_last = ros::Time::now();
@@ -179,28 +172,26 @@ void cmdCallback(const ros::TimerEvent &e)
     vel = traj_[1].evaluateDeBoorT(t_cur);
     acc = traj_[2].evaluateDeBoorT(t_cur);
 
-    /*** calculate yaw ***/
+    /*** 计算偏航角 ***/
     yaw_yawdot = calculate_yaw(t_cur, pos, time_now, time_last);
-    /*** calculate yaw ***/
+    /*** 计算偏航角 ***/
 
-    double tf = min(traj_duration_, t_cur + 2.0);
-    pos_f = traj_[0].evaluateDeBoorT(tf);
+    double tf = std::min(traj_duration_, t_cur + 2.0);
   }
   else if (t_cur >= traj_duration_)
   {
-    /* hover when finish traj_ */
+    /* 当轨迹完成时悬停 */
     pos = traj_[0].evaluateDeBoorT(traj_duration_);
     vel.setZero();
     acc.setZero();
 
     yaw_yawdot.first = last_yaw_;
     yaw_yawdot.second = 0;
-
-    pos_f = pos;
   }
   else
   {
-    cout << "[Traj server]: invalid time." << endl;
+    ROS_ERROR("[Traj server]: 无效时间.");
+    return;
   }
   time_last = time_now;
 
@@ -227,6 +218,7 @@ void cmdCallback(const ros::TimerEvent &e)
   last_yaw_ = cmd.yaw;
 
   pos_cmd_pub.publish(cmd);
+  prometheus_cmd_pub.publish(cmd2); // 修改5：发布 prometheus_cmd_pub
 }
 
 int main(int argc, char **argv)
@@ -238,10 +230,11 @@ int main(int argc, char **argv)
   ros::Subscriber bspline_sub = node.subscribe("planning/bspline", 10, bsplineCallback);
 
   pos_cmd_pub = node.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);
+  prometheus_cmd_pub = node.advertise<geometry_msgs::Twist>("/mavros/setpoint_velocity/cmd_vel_unstamped", 50); // 修改6：修改 prometheus_cmd_pub 的发布者类型
 
   ros::Timer cmd_timer = node.createTimer(ros::Duration(0.01), cmdCallback);
 
-  /* control parameter */
+  /* 控制参数 */
   cmd.kx[0] = pos_gain[0];
   cmd.kx[1] = pos_gain[1];
   cmd.kx[2] = pos_gain[2];
@@ -256,7 +249,7 @@ int main(int argc, char **argv)
 
   ros::Duration(1.0).sleep();
 
-  ROS_WARN("[Traj server]: ready.");
+  ROS_WARN("[Traj server]: 准备就绪.");
 
   ros::spin();
 
