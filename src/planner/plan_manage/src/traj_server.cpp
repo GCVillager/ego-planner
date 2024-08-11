@@ -4,14 +4,14 @@
 #include "quadrotor_msgs/PositionCommand.h"
 #include "std_msgs/Empty.h"
 #include "visualization_msgs/Marker.h"
-#include "geometry_msgs/Twist.h" //包含 geometry_msgs/Twist 头文件
+#include "mavros_msgs/PositionTarget.h" //包含 mavros_msgs/PositionTarget 头文件
 #include "ros/ros.h"
 
 ros::Publisher pos_cmd_pub;
 ros::Publisher prometheus_cmd_pub; // 修改发布者名称
 
 quadrotor_msgs::PositionCommand cmd;
-geometry_msgs::Twist cmd2; // 使用 geometry_msgs::Twist 替换 airsim_ros_pkgs::VelCmd
+mavros_msgs::PositionTarget cmd2; // 使用 geometry_msgs::Twist 替换 airsim_ros_pkgs::VelCmd
 
 double pos_gain[3] = {0, 0, 0};
 double vel_gain[3] = {0, 0, 0};
@@ -190,7 +190,7 @@ void cmdCallback(const ros::TimerEvent &e)
   }
   else
   {
-    ROS_ERROR("[Traj server]: 无效时间.");
+    ROS_ERROR("[Traj server]: 不合法的时间.");
     return;
   }
   time_last = time_now;
@@ -217,6 +217,17 @@ void cmdCallback(const ros::TimerEvent &e)
 
   last_yaw_ = cmd.yaw;
 
+  cmd2.header.stamp = time_now;
+  cmd2.header.frame_id = "world";
+  cmd2.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+  cmd2.type_mask = mavros_msgs::PositionTarget::IGNORE_PX | mavros_msgs::PositionTarget::IGNORE_PY | mavros_msgs::PositionTarget::IGNORE_PZ |
+                   mavros_msgs::PositionTarget::IGNORE_AFX | mavros_msgs::PositionTarget::IGNORE_AFY | mavros_msgs::PositionTarget::IGNORE_AFZ |
+                   mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+  cmd2.velocity.x = vel(0);
+  cmd2.velocity.y = vel(1);
+  cmd2.velocity.z = vel(2);
+  cmd2.yaw = cmd.yaw;
+  
   pos_cmd_pub.publish(cmd);
   prometheus_cmd_pub.publish(cmd2); // 修改5：发布 prometheus_cmd_pub
 }
@@ -230,7 +241,7 @@ int main(int argc, char **argv)
   ros::Subscriber bspline_sub = node.subscribe("planning/bspline", 10, bsplineCallback);
 
   pos_cmd_pub = node.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);
-  prometheus_cmd_pub = node.advertise<geometry_msgs::Twist>("/mavros/setpoint_velocity/cmd_vel_unstamped", 50); // 修改6：修改 prometheus_cmd_pub 的发布者类型
+  prometheus_cmd_pub = node.advertise<geometry_msgs::Twist>("/uav1/mavros/setpoint_raw/target_local", 50); // 修改6：修改 prometheus_cmd_pub 的发布者类型
 
   ros::Timer cmd_timer = node.createTimer(ros::Duration(0.01), cmdCallback);
 
